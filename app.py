@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 from supabase import create_client
@@ -6,8 +7,17 @@ st.set_page_config(page_title="Cotizador de Plásticos", layout="wide")
 
 @st.cache_resource
 def init_supabase():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    # Intenta obtener credenciales desde las variables de Render u el archivo local secrets.toml
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    
+    if not url or not key:
+        try:
+            url = url or st.secrets["SUPABASE_URL"]
+            key = key or st.secrets["SUPABASE_KEY"]
+        except Exception:
+            pass
+            
     return create_client(url, key)
 
 supabase = init_supabase()
