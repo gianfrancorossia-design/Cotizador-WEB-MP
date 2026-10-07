@@ -45,8 +45,8 @@ if "carrito" not in st.session_state:
 
 # Funciones Auxiliares
 def cliente_completo(cli):
-    # Validamos las 6 columnas solicitadas
-    campos = ["rut", "razon_social", "atencion", "fono", "direccion", "correo_electronico"]
+    # Validamos las 6 columnas solicitadas usando "correo"
+    campos = ["rut", "razon_social", "atencion", "fono", "direccion", "correo"]
     return all(cli.get(c) and str(cli.get(c)).strip() != "" for c in campos)
 
 def cerrar_sesion_cliente():
@@ -105,17 +105,17 @@ elif not cliente_completo(st.session_state.cliente_actual):
         atencion = c1.text_input("Atencion", value=cli.get("atencion", ""))
         fono = c2.text_input("Fono", value=cli.get("fono", ""))
         direccion = c1.text_input("Direccion", value=cli.get("direccion", ""))
-        correo_electronico = c2.text_input("Correo electonico", value=cli.get("correo_electronico", ""))
+        correo = c2.text_input("Correo", value=cli.get("correo", ""))
         
         if st.form_submit_button("Guardar y Continuar"):
-            if rut and razon_social and atencion and fono and direccion and correo_electronico:
+            if rut and razon_social and atencion and fono and direccion and correo:
                 datos_guardar = {
                     "rut": rut, 
                     "razon_social": razon_social,
                     "atencion": atencion, 
                     "fono": fono, 
                     "direccion": direccion,
-                    "correo_electronico": correo_electronico
+                    "correo": correo
                 }
                 
                 if st.session_state.cliente_en_bd:
@@ -138,7 +138,7 @@ elif not cliente_completo(st.session_state.cliente_actual):
 # =====================================================================
 else:
     cli = st.session_state.cliente_actual
-    st.info(f"👤 **Cliente Activo:** {cli['razon_social']} (RUT: {cli['rut']}) - {cli['correo_electronico']}")
+    st.info(f"👤 **Cliente Activo:** {cli['razon_social']} (RUT: {cli['rut']}) - {cli['correo']}")
     if st.button("Cambiar Cliente"):
         cerrar_sesion_cliente()
         
