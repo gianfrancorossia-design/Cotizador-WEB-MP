@@ -16,7 +16,6 @@ def init_supabase():
 supabase = init_supabase()
 
 # --- 2. ESTRUCTURA DE MATERIALES (Basado en Excel V3_6) ---
-# Diccionario con las densidades y los sub-formatos específicos de cada material
 ESTRUCTURA_MATERIALES = {
     "HMW": {
         "densidad": 0.96,
@@ -46,7 +45,8 @@ if "carrito" not in st.session_state:
 
 # Funciones Auxiliares
 def cliente_completo(cli):
-    campos = ["rut", "atencion", "fono", "correo"]
+    # Validamos las 6 columnas solicitadas
+    campos = ["rut", "razon_social", "atencion", "fono", "direccion", "correo_electronico"]
     return all(cli.get(c) and str(cli.get(c)).strip() != "" for c in campos)
 
 def cerrar_sesion_cliente():
@@ -63,13 +63,12 @@ st.title("⚙️ Sistema de Cotización y Gestión")
 # =====================================================================
 if st.session_state.cliente_actual is None:
     st.subheader("🔍 Buscar Cliente")
-    busqueda = st.text_input("Ingresa RUT (ej: 12345678-9) o Nombre del Cliente")
+    busqueda = st.text_input("Ingresa RUT (ej: 12345678-9) o Razón Social")
     
     col1, col2 = st.columns([1, 4])
     if col1.button("Buscar en Base de Datos", type="primary"):
         if busqueda:
-            # Busca por RUT o por el campo "atencion" (que reemplazó a razon_social en tu BD)
-            res = supabase.table("clientes").select("*").or_(f"rut.eq.{busqueda},atencion.ilike.%{busqueda}%").execute()
+            res = supabase.table("clientes").select("*").or_(f"rut.eq.{busqueda},razon_social.ilike.%{busqueda}%").execute()
             
             if res.data:
                 if len(res.data) == 1:
@@ -84,7 +83,7 @@ if st.session_state.cliente_actual is None:
                 es_rut = "-" in busqueda
                 st.session_state.cliente_actual = {
                     "rut": busqueda if es_rut else "", 
-                    "atencion": busqueda if not es_rut else ""
+                    "razon_social": busqueda if not es_rut else ""
                 }
                 st.session_state.cliente_en_bd = False
                 st.rerun()
@@ -101,16 +100,22 @@ elif not cliente_completo(st.session_state.cliente_actual):
     with st.form("form_completar_cliente"):
         c1, c2 = st.columns(2)
         
-        rut = c1.text_input("RUT (Sin puntos, con guión)", value=cli.get("rut", ""), disabled=st.session_state.cliente_en_bd)
-        atencion = c2.text_input("Atención / Razón Social", value=cli.get("atencion", ""))
-        fono = c1.text_input("Teléfono", value=cli.get("fono", ""))
-        correo = c2.text_input("Correo Electrónico", value=cli.get("correo", ""))
+        rut = c1.text_input("Rut (Sin puntos, con guión)", value=cli.get("rut", ""), disabled=st.session_state.cliente_en_bd)
+        razon_social = c2.text_input("Razon social", value=cli.get("razon_social", ""))
+        atencion = c1.text_input("Atencion", value=cli.get("atencion", ""))
+        fono = c2.text_input("Fono", value=cli.get("fono", ""))
+        direccion = c1.text_input("Direccion", value=cli.get("direccion", ""))
+        correo_electronico = c2.text_input("Correo electonico", value=cli.get("correo_electronico", ""))
         
         if st.form_submit_button("Guardar y Continuar"):
-            if rut and atencion and fono and correo:
+            if rut and razon_social and atencion and fono and direccion and correo_electronico:
                 datos_guardar = {
-                    "rut": rut, "atencion": atencion, 
-                    "fono": fono, "correo": correo
+                    "rut": rut, 
+                    "razon_social": razon_social,
+                    "atencion": atencion, 
+                    "fono": fono, 
+                    "direccion": direccion,
+                    "correo_electronico": correo_electronico
                 }
                 
                 if st.session_state.cliente_en_bd:
@@ -133,7 +138,7 @@ elif not cliente_completo(st.session_state.cliente_actual):
 # =====================================================================
 else:
     cli = st.session_state.cliente_actual
-    st.info(f"👤 **Cliente Activo:** {cli['atencion']} (RUT: {cli['rut']}) - {cli['correo']}")
+    st.info(f"👤 **Cliente Activo:** {cli['razon_social']} (RUT: {cli['rut']}) - {cli['correo_electronico']}")
     if st.button("Cambiar Cliente"):
         cerrar_sesion_cliente()
         
@@ -143,16 +148,11 @@ else:
     
     col_m1, col_m2, col_m3 = st.columns(3)
     
-    # 1. Selección de Material
     material_sel = col_m1.selectbox("Material", list(ESTRUCTURA_MATERIALES.keys()))
-    
-    # 2. Selección de Formato dinámico (depende del material elegido, basado en el Excel)
     formatos_disponibles = ESTRUCTURA_MATERIALES[material_sel]["formatos"]
     formato_sel = col_m2.selectbox("Formato y Color", formatos_disponibles)
-    
     tipo_venta = col_m3.radio("Tipo de Venta", ["Dimensionado (Trozo)", "Completo (Barra/Plancha entera)"])
     
-    # Consultar si el cliente tiene un descuento usando su RUT para este material y formato específico
     res_desc = supabase.table("descuentos_cliente").select("*")\
         .eq("cliente_rut", cli["rut"]).eq("material", material_sel).eq("tipo_formato", formato_sel).execute()
     
@@ -175,7 +175,6 @@ else:
     st.write("### 📐 Dimensiones")
     c1, c2, c3 = st.columns(3)
     
-    # Determinar matemáticamente si el formato seleccionado es Barra o Plancha
     es_barra = "BARRA" in formato_sel.upper()
     
     if es_barra:
@@ -188,7 +187,7 @@ else:
         descripcion_item = f"{material_sel} {formato_sel} Ø{diametro_mm}mm x {largo_cm}cm ({tipo_venta})"
         st.caption(f"Peso est. metro: {kg_metro:.2f} kg | Valor cm lineal: ${valor_cm_lineal:.1f}")
 
-    else: # Es Plancha
+    else: 
         espesor_mm = c1.number_input("Espesor (mm)", min_value=1.0, value=20.0)
         ancho_cm = c2.number_input("Ancho Requerido (cm)", min_value=1.0, value=100.0 if tipo_venta == "Completo (Barra/Plancha entera)" else 30.0)
         largo_cm = c3.number_input("Largo Requerido (cm)", min_value=1.0, value=300.0 if tipo_venta == "Completo (Barra/Plancha entera)" else 50.0)
