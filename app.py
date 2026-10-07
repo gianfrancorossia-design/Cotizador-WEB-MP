@@ -1,97 +1,66 @@
-import os
 import streamlit as st
-import pandas as pd
-from supabase import create_client
+import math
 
-st.set_page_config(page_title="Cotizador de Plásticos", layout="wide")
+# Diccionario de densidades según tu Excel
+DENSIDADES = {
+    "POM": 1.42,
+    "PA-6": 1.14,
+    "POLIPROPILENO": 0.92,
+    "HMW": 0.96,
+    "OTRO": 1.14
+}
 
-@st.cache_resource
-def init_supabase():
-    # Intenta obtener credenciales desde las variables de Render u el archivo local secrets.toml
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
+st.subheader("📐 Cotización por Trozo / Corte a Medida")
+
+tipo_formato = st.radio("Tipo de Formato", ["Barra (Redonda)", "Plancha (Corte Rectangular)"], horizontal=True)
+
+col_m1, col_m2, col_m3 = st.columns(3)
+material_sel = col_m1.selectbox("Material para Cálculo", list(DENSIDADES.keys()))
+densidad = DENSIDADES[material_sel]
+precio_base_usd_kilo = col_m2.number_input("Precio Base USD / Kilo", value=12.0)
+valor_dolar = col_m3.number_input("Dólar ($ CLP)", value=961.61)
+descuento_porcentaje = col_m1.number_input("Descuento Cliente (%)", value=0.0)
+
+# Precio final por kilo en CLP neto
+precio_kilo_clp = precio_base_usd_kilo * valor_dolar * (1 - descuento_porcentaje / 100.0)
+
+if tipo_formato == "Barra (Redonda)":
+    c1, c2 = st.columns(2)
+    diametro_mm = c1.number_input("Diámetro de Barra (mm)", min_value=5.0, value=60.0)
+    largo_corte_cm = c2.number_input("Largo del Trozo Requerido (cm)", min_value=1.0, value=20.0)
+
+    # Fórmula exacta del Excel para Barra
+    kg_metro = ((diametro_mm * 1.035) ** 2) * (math.pi / 4.0) * densidad * 1000.0 / 1000000.0
+    valor_metro_neto = kg_metro * precio_kilo_clp
+    valor_cm_lineal = (valor_metro_neto / 100.0) * 1.20  # Factor 1.2 por trozado
     
-    if not url or not key:
-        try:
-            url = url or st.secrets["SUPABASE_URL"]
-            key = key or st.secrets["SUPABASE_KEY"]
-        except Exception:
-            pass
-            
-    return create_client(url, key)
-
-supabase = init_supabase()
-
-st.title("⚙️ Sistema de Cotización y Gestión de Precios")
-
-tabs = st.tabs(["🧮 Cotizar", "👥 Gestionar Clientes y Descuentos", "💵 Precios Base USD"])
-
-# --- TAB 1: COTIZADOR AUTOMÁTICO ---
-with tabs[0]:
-    st.header("Calcular Cotización")
+    subtotal_neto = valor_cm_lineal * largo_corte_cm
     
-    col_c1, col_c2 = st.columns(2)
+    st.info(f"📊 **Peso est. por metro:** {kg_metro:.3f} kg/m | **Precio por cm lineal:** ${valor_cm_lineal:,.1f} CLP")
+
+else:  # Plancha
+    c1, c2, c3 = st.columns(3)
+    espesor_mm = c1.number_input("Espesor de Plancha (mm)", min_value=1.0, value=20.0)
+    ancho_trozo_cm = c2.number_input("Ancho del Trozo (cm)", min_value=1.0, value=30.0)
+    largo_trozo_cm = c3.number_input("Largo del Trozo (cm)", min_value=1.0, value=50.0)
+
+    # Medidas de la plancha estándar de origen (1000mm x 3000mm)
+    ancho_std_mm = 1000.0
+    largo_std_mm = 3000.0
     
-    res_cli = supabase.table("clientes").select("id, razon_social, rut").execute()
-    if res_cli.data:
-        dict_cli = {f"{c['razon_social']} ({c['rut']})": c['id'] for c in res_cli.data}
-        cli_sel_name = col_c1.selectbox("Cliente", list(dict_cli.keys()))
-        cli_id = dict_cli[cli_sel_name]
-    else:
-        st.warning("No hay clientes registrados en la base de datos.")
-        cli_id = None
+    kg_plancha_std = (espesor_mm * 1.035) * ancho_std_mm * largo_std_mm * densidad / 1000000.0
+    superficie_std_cm2 = (ancho_std_mm / 10.0) * (largo_std_mm / 10.0)
     
-    res_fmt = supabase.table("formatos_material").select("*").execute()
-    df_fmt = pd.DataFrame(res_fmt.data) if res_fmt.data else pd.DataFrame()
+    precio_plancha_neto = kg_plancha_std * precio_kilo_clp
+    precio_cm2 = (precio_plancha_neto / superficie_std_cm2) * 1.20  # Factor 1.2 por trozado
     
-    if not df_fmt.empty:
-        mat_sel = col_c2.selectbox("Material", df_fmt['material'].unique())
-        fmts_disponibles = df_fmt[df_fmt['material'] == mat_sel]
-        fmt_sel = col_c2.selectbox("Formato / Variante", fmts_disponibles['formato'].unique())
-        
-        fmt_obj = fmts_disponibles[fmts_disponibles['formato'] == fmt_sel].iloc[0]
-        fmt_id = int(fmt_obj['id'])
-        precio_base_usd = float(fmt_obj['precio_base_usd'])
-        
-        # Buscar Descuento Pactado
-        descuento_aplicado = 0.0
-        if cli_id:
-            res_desc = supabase.table("descuentos_cliente") \
-                .select("descuento_porcentaje") \
-                .eq("cliente_id", cli_id) \
-                .eq("formato_material_id", fmt_id) \
-                .execute()
-            if res_desc.data:
-                descuento_aplicado = float(res_desc.data[0]['descuento_porcentaje'])
-        
-        st.info(f"💡 **Descuento asignado a este cliente para {mat_sel} - {fmt_sel}:** {descuento_aplicado}%")
-        
-        col_k1, col_k2, col_k3 = st.columns(3)
-        kilos = col_k1.number_input("Kilos Requeridos", min_value=0.1, value=10.0)
-        dolar = col_k2.number_input("Valor Dólar Observado ($)", value=961.61)
-        desc_override = col_k3.number_input("Descuento Aplicado (%)", value=descuento_aplicado)
+    area_trozo_cm2 = ancho_trozo_cm * largo_trozo_cm
+    subtotal_neto = precio_cm2 * area_trozo_cm2
+    
+    st.info(f"📊 **Área del trozo:** {area_trozo_cm2:,.0f} cm² | **Precio por cm²:** ${precio_cm2:,.2f} CLP")
 
-        precio_kilo_clp = precio_base_usd * dolar
-        subtotal_neto = kilos * precio_kilo_clp * (1 - desc_override / 100.0)
-        iva = subtotal_neto * 0.19
-        total = subtotal_neto + iva
+iva = subtotal_neto * 0.19
+total_con_iva = subtotal_neto + iva
 
-        st.markdown("---")
-        st.success(f"### Total Cotización: ${total:,.0f} CLP (Neto: ${subtotal_neto:,.0f} + IVA)")
-
-# --- TAB 2: GESTIONAR CLIENTES Y DESCUENTOS ---
-with tabs[1]:
-    st.header("Directorio de Clientes")
-    if res_cli.data:
-        df_c = pd.DataFrame(supabase.table("clientes").select("*").execute().data)
-        st.dataframe(df_c, use_container_width=True)
-
-# --- TAB 3: PRECIOS BASE ---
-with tabs[2]:
-    st.header("Precios Base USD por Formato")
-    if not df_fmt.empty:
-        df_edited = st.data_editor(df_fmt[['id', 'material', 'formato', 'precio_base_usd']], use_container_width=True)
-        if st.button("Guardar Cambios en Precios Base"):
-            for idx, row in df_edited.iterrows():
-                supabase.table("formatos_material").update({'precio_base_usd': row['precio_base_usd']}).eq("id", row['id']).execute()
-            st.success("Precios actualizados correctamente.")
+st.markdown("---")
+st.success(f"### 💰 Precio del Trozo: ${total_con_iva:,.0f} CLP IVA Incl. (Neto: ${subtotal_neto:,.0f} CLP)")
