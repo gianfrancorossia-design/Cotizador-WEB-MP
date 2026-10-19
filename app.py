@@ -6,17 +6,30 @@ from supabase import create_client
 
 st.set_page_config(page_title="Cotizador Avanzado", layout="wide")
 
-# Clave de Administrador (puedes cambiarla aquí o ponerla en st.secrets["ADMIN_PASSWORD"])
-ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin123")
+# --- OBTENER VARIABLES DE ENTORNO DE FORMA SEGURA ---
+def get_secret(key_name, default_val=""):
+    # 1. Busca en las variables de entorno del servidor (Render)
+    val = os.environ.get(key_name)
+    if val:
+        return val
+    # 2. Busca en st.secrets sin lanzar error si no existe el archivo .toml
+    try:
+        if key_name in st.secrets:
+            return st.secrets[key_name]
+    except Exception:
+        pass
+    return default_val
+
+ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD", "admin123")
 
 # --- 1. INICIALIZAR SUPABASE ---
 @st.cache_resource
 def init_supabase():
-    url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
+    url = get_secret("SUPABASE_URL")
+    key = get_secret("SUPABASE_KEY")
     
     if not url or not key:
-        st.error("⚠️ Faltan las credenciales de Supabase. Configura SUPABASE_URL y SUPABASE_KEY en las variables de entorno o en st.secrets.")
+        st.error("⚠️ Faltan las credenciales de Supabase. Configura SUPABASE_URL y SUPABASE_KEY en las variables de entorno de Render.")
         st.stop()
         
     try:
@@ -193,10 +206,8 @@ if opcion_menu == "🧮 Cotizador":
         formato_sel = col_m2.selectbox("Formato / Aditivo", formatos_disponibles)
         tipo_venta = col_m3.radio("Tipo de Venta", ["Dimensionado (Trozo)", "Completo (Barra/Plancha entera)"])
         
-        # Obtener precio base sugerido desde la BD
         precio_base_sugerido = PRECIOS_BASE_DB.get((material_sel, formato_sel), 12.0)
 
-        # Buscar descuento en BD
         res_desc = supabase.table("descuentos_cliente").select("*")\
             .eq("cliente_rut", cli["rut"]).eq("material", material_sel).eq("tipo_formato", formato_sel).execute()
         
@@ -296,7 +307,6 @@ if opcion_menu == "🧮 Cotizador":
 elif opcion_menu == "🔑 Panel Administrador":
     st.title("🔑 Panel de Administración y Configuración")
     
-    # Autenticación de Administrador
     if not st.session_state.admin_autenticado:
         with st.form("form_login_admin"):
             st.subheader("Ingreso con Credenciales de Administrador")
@@ -311,7 +321,6 @@ elif opcion_menu == "🔑 Panel Administrador":
     else:
         st.sidebar.button("🔒 Cerrar Sesión Admin", on_click=lambda: st.session_state.update({"admin_autenticado": False}))
         
-        # --- SECCIÓN A: CONFIGURACIÓN DEL DÓLAR OBSERVADO ---
         st.subheader("💵 Configuración Global del Dólar Observado")
         col_d1, col_d2 = st.columns([2, 1])
         nuevo_dolar = col_d1.number_input("Dólar Observado Actual ($ CLP)", value=float(st.session_state.dolar_observado), step=0.5)
@@ -321,17 +330,15 @@ elif opcion_menu == "🔑 Panel Administrador":
             
         st.markdown("---")
         
-        # --- SECCIÓN B: MODIFICAR PRECIOS BASE DE MATERIALES ---
         st.subheader("🛠️ Editar Precios Base por Material (USD / Kg)")
         st.caption("Modifica los precios directamente en la tabla y presiona 'Guardar Cambios' para actualizar en Supabase.")
         
         if not DF_MATERIALES_RAW.empty:
-            # Preparamos el dataframe para edición
             df_edit = DF_MATERIALES_RAW[["id", "material", "formato", "precio_base_usd"]].copy()
             
             edited_df = st.data_editor(
                 df_edit,
-                disabled=["id", "material", "formato"],  # Solo se permite editar el precio
+                disabled=["id", "material", "formato"],
                 column_config={
                     "id": "ID",
                     "material": "Material",
@@ -354,7 +361,7 @@ elif opcion_menu == "🔑 Panel Administrador":
                             supabase.table("materiales_precios").update({"precio_base_usd": nuevo_precio}).eq("id", row_id).execute()
                             cambios += 1
                             
-                    st.cache_data.clear()  # Limpia la caché para recargar datos
+                    st.cache_data.clear()
                     st.success(f"✅ Se actualizaron {cambios} precio(s) correctamente.")
                     st.rerun()
                 except Exception as e:
