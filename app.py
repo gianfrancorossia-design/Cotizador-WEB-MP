@@ -9,9 +9,18 @@ st.set_page_config(page_title="Cotizador Avanzado", layout="wide")
 # --- 1. INICIALIZAR SUPABASE ---
 @st.cache_resource
 def init_supabase():
-    url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
-    return create_client(url, key)
+    url = os.environ.get("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
+    
+    if not url or not key:
+        st.error("⚠️ Faltan las credenciales de Supabase. Configura SUPABASE_URL y SUPABASE_KEY en las variables de entorno o en st.secrets.")
+        st.stop()
+        
+    try:
+        return create_client(url, key)
+    except Exception as e:
+        st.error(f"Error al conectar con Supabase: {e}")
+        st.stop()
 
 supabase = init_supabase()
 
