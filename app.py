@@ -8,11 +8,9 @@ st.set_page_config(page_title="Cotizador Avanzado", layout="wide")
 
 # --- OBTENER VARIABLES DE ENTORNO DE FORMA SEGURA ---
 def get_secret(key_name, default_val=""):
-    # 1. Busca en las variables de entorno del servidor (Render)
     val = os.environ.get(key_name)
     if val:
         return val
-    # 2. Busca en st.secrets sin lanzar error si no existe el archivo .toml
     try:
         if key_name in st.secrets:
             return st.secrets[key_name]
@@ -206,18 +204,19 @@ if opcion_menu == "🧮 Cotizador":
         formato_sel = col_m2.selectbox("Formato / Aditivo", formatos_disponibles)
         tipo_venta = col_m3.radio("Tipo de Venta", ["Dimensionado (Trozo)", "Completo (Barra/Plancha entera)"])
         
-        precio_base_sugerido = PRECIOS_BASE_DB.get((material_sel, formato_sel), 12.0)
+        # Obtener precio base oficial desde la BD (Oculto para el vendedor)
+        precio_base_usd = float(PRECIOS_BASE_DB.get((material_sel, formato_sel), 12.0))
+        dolar = float(st.session_state.dolar_observado)
 
+        # Buscar descuento en BD
         res_desc = supabase.table("descuentos_cliente").select("*")\
             .eq("cliente_rut", cli["rut"]).eq("material", material_sel).eq("tipo_formato", formato_sel).execute()
         
         descuento_guardado = res_desc.data[0]["descuento_porcentaje"] if res_desc.data else 0.0
         desc_id_guardado = res_desc.data[0]["id"] if res_desc.data else None
 
-        col_p1, col_p2, col_p3 = st.columns(3)
-        precio_base_usd = col_p1.number_input("Precio Base USD / Kilo", value=float(precio_base_sugerido))
-        dolar = col_p2.number_input("Dólar Observado ($ CLP)", value=float(st.session_state.dolar_observado))
-        descuento_aplicado = col_p3.number_input("Descuento a Aplicar (%)", value=float(descuento_guardado))
+        # Solo el vendedor modifica el porcentaje de descuento del cliente
+        descuento_aplicado = st.number_input("Descuento a Aplicar (%)", value=float(descuento_guardado), min_value=0.0, max_value=100.0)
         
         densidad = ESTRUCTURA_MATERIALES[material_sel]["densidad"]
         precio_kilo_clp = precio_base_usd * dolar * (1 - descuento_aplicado / 100.0)
@@ -302,7 +301,7 @@ if opcion_menu == "🧮 Cotizador":
             st.write("El carrito está vacío.")
 
 # =====================================================================
-# OPCIÓN 2: PANEL DE ADMINISTRADOR
+# OPCIÓN 2: PANEL DE ADMINISTRADOR (EXCLUSIVO)
 # =====================================================================
 elif opcion_menu == "🔑 Panel Administrador":
     st.title("🔑 Panel de Administración y Configuración")
@@ -331,7 +330,7 @@ elif opcion_menu == "🔑 Panel Administrador":
         st.markdown("---")
         
         st.subheader("🛠️ Editar Precios Base por Material (USD / Kg)")
-        st.caption("Modifica los precios directamente en la tabla y presiona 'Guardar Cambios' para actualizar en Supabase.")
+        st.caption("Modifica los precios base kilo USD directamente en la tabla y presiona 'Guardar Cambios' para actualizar en Supabase.")
         
         if not DF_MATERIALES_RAW.empty:
             df_edit = DF_MATERIALES_RAW[["id", "material", "formato", "precio_base_usd"]].copy()
@@ -343,7 +342,7 @@ elif opcion_menu == "🔑 Panel Administrador":
                     "id": "ID",
                     "material": "Material",
                     "formato": "Formato / Variante / Aditivo",
-                    "precio_base_usd": st.column_config.NumberColumn("Precio Base (USD)", format="$%.2f", min_value=0.0)
+                    "precio_base_usd": st.column_config.NumberColumn("Precio Base Kilo (USD)", format="$%.2f", min_value=0.0)
                 },
                 hide_index=True,
                 use_container_width=True
