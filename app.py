@@ -25,7 +25,7 @@ def init_supabase():
 supabase = init_supabase()
 
 # --- 2. CARGAR MATERIALES Y DENSIDADES ---
-# Definimos las densidades estándar por material (puedes ajustarlas si lo necesitas)
+# Densidades estándar actualizadas (incluyendo PTFE)
 DENSIDADES_MATERIALES = {
     "HMW": 0.96,
     "PA-6": 1.14,
@@ -67,7 +67,7 @@ def cargar_estructura_materiales():
 ESTRUCTURA_MATERIALES, PRECIOS_BASE_DB = cargar_estructura_materiales()
 
 if not ESTRUCTURA_MATERIALES:
-    st.warning("No se encontraron materiales en la base de datos. Asegúrate de haber ejecutado el script SQL en Supabase.")
+    st.warning("No se encontraron materiales en la base de datos. Asegúrate de haber ejecutado el script SQL actualizado en Supabase.")
     st.stop()
 
 # --- 3. GESTIÓN DEL ESTADO (SESSION STATE) ---
