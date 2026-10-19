@@ -6,6 +6,9 @@ from supabase import create_client
 
 st.set_page_config(page_title="Cotizador Avanzado", layout="wide")
 
+# Clave de Administrador (puedes cambiarla aquí o ponerla en st.secrets["ADMIN_PASSWORD"])
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin123")
+
 # --- 1. INICIALIZAR SUPABASE ---
 @st.cache_resource
 def init_supabase():
@@ -25,7 +28,6 @@ def init_supabase():
 supabase = init_supabase()
 
 # --- 2. CARGAR MATERIALES Y DENSIDADES ---
-# Densidades estándar actualizadas (incluyendo PTFE)
 DENSIDADES_MATERIALES = {
     "HMW": 0.96,
     "PA-6": 1.14,
@@ -59,16 +61,12 @@ def cargar_estructura_materiales():
                 
             precios_base_dict[(mat, fmt)] = float(precio)
             
-        return estructura, precios_base_dict
+        return estructura, precios_base_dict, pd.DataFrame(data)
     except Exception as e:
         st.error(f"Error al cargar materiales desde Supabase: {e}")
-        return {}, {}
+        return {}, {}, pd.DataFrame()
 
-ESTRUCTURA_MATERIALES, PRECIOS_BASE_DB = cargar_estructura_materiales()
-
-if not ESTRUCTURA_MATERIALES:
-    st.warning("No se encontraron materiales en la base de datos. Asegúrate de haber ejecutado el script SQL actualizado en Supabase.")
-    st.stop()
+ESTRUCTURA_MATERIALES, PRECIOS_BASE_DB, DF_MATERIALES_RAW = cargar_estructura_materiales()
 
 # --- 3. GESTIÓN DEL ESTADO (SESSION STATE) ---
 if "cliente_actual" not in st.session_state:
@@ -77,6 +75,10 @@ if "cliente_en_bd" not in st.session_state:
     st.session_state.cliente_en_bd = False
 if "carrito" not in st.session_state:
     st.session_state.carrito = []
+if "dolar_observado" not in st.session_state:
+    st.session_state.dolar_observado = 961.61
+if "admin_autenticado" not in st.session_state:
+    st.session_state.admin_autenticado = False
 
 # Funciones Auxiliares
 def cliente_completo(cli):
@@ -89,198 +91,273 @@ def cerrar_sesion_cliente():
     st.session_state.carrito = []
     st.rerun()
 
-# --- 4. INTERFAZ DE USUARIO ---
-st.title("⚙️ Sistema de Cotización y Gestión")
+# --- 4. BARRA LATERAL (NAVEGACIÓN) ---
+st.sidebar.title("📌 Menú Principal")
+opcion_menu = st.sidebar.radio("Selecciona una opción:", ["🧮 Cotizador", "🔑 Panel Administrador"])
 
 # =====================================================================
-# PANTALLA A: BÚSQUEDA / SELECCIÓN DE CLIENTE
+# OPCIÓN 1: COTIZADOR (VENDEDOR)
 # =====================================================================
-if st.session_state.cliente_actual is None:
-    st.subheader("🔍 Buscar Cliente")
-    busqueda = st.text_input("Ingresa RUT (ej: 12345678-9) o Razón Social")
-    
-    col1, col2 = st.columns([1, 4])
-    if col1.button("Buscar en Base de Datos", type="primary"):
-        if busqueda:
-            res = supabase.table("clientes").select("*").or_(f"rut.eq.{busqueda},razon_social.ilike.%{busqueda}%").execute()
+if opcion_menu == "🧮 Cotizador":
+    st.title("⚙️ Sistema de Cotización y Gestión")
+
+    if not ESTRUCTURA_MATERIALES:
+        st.warning("No se encontraron materiales en la base de datos. Asegúrate de haber ejecutado el script SQL en Supabase.")
+        st.stop()
+
+    # --- PANTALLA A: BÚSQUEDA / SELECCIÓN DE CLIENTE ---
+    if st.session_state.cliente_actual is None:
+        st.subheader("🔍 Buscar Cliente")
+        busqueda = st.text_input("Ingresa RUT (ej: 12345678-9) o Razón Social")
+        
+        col1, col2 = st.columns([1, 4])
+        if col1.button("Buscar en Base de Datos", type="primary"):
+            if busqueda:
+                res = supabase.table("clientes").select("*").or_(f"rut.eq.{busqueda},razon_social.ilike.%{busqueda}%").execute()
+                
+                if res.data:
+                    if len(res.data) == 1:
+                        st.session_state.cliente_actual = res.data[0]
+                        st.session_state.cliente_en_bd = True
+                        st.rerun()
+                    else:
+                        st.warning("Se encontraron múltiples clientes. Sé más específico (usa el RUT).")
+                        st.dataframe(res.data)
+                else:
+                    st.info("Cliente no encontrado. Puedes ingresarlo a continuación.")
+                    es_rut = "-" in busqueda
+                    st.session_state.cliente_actual = {
+                        "rut": busqueda if es_rut else "", 
+                        "razon_social": busqueda if not es_rut else ""
+                    }
+                    st.session_state.cliente_en_bd = False
+                    st.rerun()
+            else:
+                st.error("Ingresa un dato para buscar.")
+
+    # --- PANTALLA B: COMPLETAR DATOS DEL CLIENTE ---
+    elif not cliente_completo(st.session_state.cliente_actual):
+        st.warning("⚠️ Los datos del cliente están incompletos o es un cliente nuevo. Por favor complétalos.")
+        cli = st.session_state.cliente_actual
+        
+        with st.form("form_completar_cliente"):
+            c1, c2 = st.columns(2)
             
-            if res.data:
-                if len(res.data) == 1:
+            rut = c1.text_input("Rut (Sin puntos, con guión)", value=cli.get("rut", ""), disabled=st.session_state.cliente_en_bd)
+            razon_social = c2.text_input("Razon social", value=cli.get("razon_social", ""))
+            atencion = c1.text_input("Atencion", value=cli.get("atencion", ""))
+            fono = c2.text_input("Fono", value=cli.get("fono", ""))
+            direccion = c1.text_input("Direccion", value=cli.get("direccion", ""))
+            correo = c2.text_input("Correo", value=cli.get("correo", ""))
+            
+            if st.form_submit_button("Guardar y Continuar"):
+                if rut and razon_social and atencion and fono and direccion and correo:
+                    datos_guardar = {
+                        "rut": rut, 
+                        "razon_social": razon_social,
+                        "atencion": atencion, 
+                        "fono": fono, 
+                        "direccion": direccion,
+                        "correo": correo
+                    }
+                    
+                    if st.session_state.cliente_en_bd:
+                        res = supabase.table("clientes").update(datos_guardar).eq("rut", rut).execute()
+                    else:
+                        res = supabase.table("clientes").insert(datos_guardar).execute()
+                        st.session_state.cliente_en_bd = True
+                    
                     st.session_state.cliente_actual = res.data[0]
-                    st.session_state.cliente_en_bd = True
+                    st.success("Cliente guardado correctamente.")
                     st.rerun()
                 else:
-                    st.warning("Se encontraron múltiples clientes. Sé más específico (usa el RUT).")
-                    st.dataframe(res.data)
-            else:
-                st.info("Cliente no encontrado. Puedes ingresarlo a continuación.")
-                es_rut = "-" in busqueda
-                st.session_state.cliente_actual = {
-                    "rut": busqueda if es_rut else "", 
-                    "razon_social": busqueda if not es_rut else ""
+                    st.error("Todos los campos son obligatorios.")
+                    
+        if st.button("Cancelar / Volver"):
+            cerrar_sesion_cliente()
+
+    # --- PANTALLA C: COTIZADOR Y CARRITO ---
+    else:
+        cli = st.session_state.cliente_actual
+        st.info(f"👤 **Cliente Activo:** {cli['razon_social']} (RUT: {cli['rut']}) - {cli['correo']}")
+        if st.button("Cambiar Cliente"):
+            cerrar_sesion_cliente()
+            
+        st.markdown("---")
+        st.subheader("🧮 Agregar Producto a la Cotización")
+        
+        col_m1, col_m2, col_m3 = st.columns(3)
+        
+        material_sel = col_m1.selectbox("Material", list(ESTRUCTURA_MATERIALES.keys()))
+        formatos_disponibles = ESTRUCTURA_MATERIALES[material_sel]["formatos"]
+        formato_sel = col_m2.selectbox("Formato / Aditivo", formatos_disponibles)
+        tipo_venta = col_m3.radio("Tipo de Venta", ["Dimensionado (Trozo)", "Completo (Barra/Plancha entera)"])
+        
+        # Obtener precio base sugerido desde la BD
+        precio_base_sugerido = PRECIOS_BASE_DB.get((material_sel, formato_sel), 12.0)
+
+        # Buscar descuento en BD
+        res_desc = supabase.table("descuentos_cliente").select("*")\
+            .eq("cliente_rut", cli["rut"]).eq("material", material_sel).eq("tipo_formato", formato_sel).execute()
+        
+        descuento_guardado = res_desc.data[0]["descuento_porcentaje"] if res_desc.data else 0.0
+        desc_id_guardado = res_desc.data[0]["id"] if res_desc.data else None
+
+        col_p1, col_p2, col_p3 = st.columns(3)
+        precio_base_usd = col_p1.number_input("Precio Base USD / Kilo", value=float(precio_base_sugerido))
+        dolar = col_p2.number_input("Dólar Observado ($ CLP)", value=float(st.session_state.dolar_observado))
+        descuento_aplicado = col_p3.number_input("Descuento a Aplicar (%)", value=float(descuento_guardado))
+        
+        densidad = ESTRUCTURA_MATERIALES[material_sel]["densidad"]
+        precio_kilo_clp = precio_base_usd * dolar * (1 - descuento_aplicado / 100.0)
+        factor_corte = 1.20 if tipo_venta == "Dimensionado (Trozo)" else 1.00
+        
+        subtotal_neto = 0
+        descripcion_item = ""
+
+        st.write("### 📐 Dimensiones")
+        c1, c2, c3 = st.columns(3)
+        
+        es_barra = "BARRA" in formato_sel.upper()
+        
+        if es_barra:
+            diametro_mm = c1.number_input("Diámetro (mm)", min_value=5.0, value=60.0)
+            largo_cm = c2.number_input("Largo Requerido (cm)", min_value=1.0, value=100.0 if tipo_venta == "Completo (Barra/Plancha entera)" else 20.0)
+            
+            kg_metro = ((diametro_mm * 1.035) ** 2) * (math.pi / 4.0) * densidad * 1000.0 / 1000000.0
+            valor_cm_lineal = ((kg_metro * precio_kilo_clp) / 100.0) * factor_corte
+            subtotal_neto = valor_cm_lineal * largo_cm
+            descripcion_item = f"{material_sel} {formato_sel} Ø{diametro_mm}mm x {largo_cm}cm ({tipo_venta})"
+            st.caption(f"Peso est. metro: {kg_metro:.2f} kg | Valor cm lineal: ${valor_cm_lineal:.1f}")
+
+        else: 
+            espesor_mm = c1.number_input("Espesor (mm)", min_value=1.0, value=20.0)
+            ancho_cm = c2.number_input("Ancho Requerido (cm)", min_value=1.0, value=100.0 if tipo_venta == "Completo (Barra/Plancha entera)" else 30.0)
+            largo_cm = c3.number_input("Largo Requerido (cm)", min_value=1.0, value=300.0 if tipo_venta == "Completo (Barra/Plancha entera)" else 50.0)
+            
+            kg_plancha_entera = (espesor_mm * 1.035) * 1000.0 * 3000.0 * densidad / 1000000.0
+            precio_cm2 = ((kg_plancha_entera * precio_kilo_clp) / (100.0 * 300.0)) * factor_corte
+            area_cm2 = ancho_cm * largo_cm
+            subtotal_neto = precio_cm2 * area_cm2
+            descripcion_item = f"{material_sel} {formato_sel} {espesor_mm}mm [{ancho_cm}cm x {largo_cm}cm] ({tipo_venta})"
+            st.caption(f"Área cotizada: {area_cm2:,.0f} cm² | Valor cm²: ${precio_cm2:.2f}")
+
+        if st.button("➕ Agregar al Carrito de Cotización", type="primary"):
+            if descuento_aplicado != descuento_guardado:
+                datos_desc = {
+                    "cliente_rut": cli["rut"], 
+                    "material": material_sel, 
+                    "tipo_formato": formato_sel, 
+                    "descuento_porcentaje": descuento_aplicado
                 }
-                st.session_state.cliente_en_bd = False
+                if desc_id_guardado:
+                    supabase.table("descuentos_cliente").update(datos_desc).eq("id", desc_id_guardado).execute()
+                else:
+                    supabase.table("descuentos_cliente").insert(datos_desc).execute()
+                st.toast(f"✅ Descuento de {descuento_aplicado}% guardado para {material_sel} {formato_sel}")
+
+            st.session_state.carrito.append({
+                "Descripción": descripcion_item,
+                "Cant.": 1,
+                "Descuento": f"{descuento_aplicado}%",
+                "Neto (CLP)": subtotal_neto,
+                "IVA (CLP)": subtotal_neto * 0.19,
+                "Total (CLP)": subtotal_neto * 1.19
+            })
+            st.rerun()
+
+        # --- RESUMEN DE CARRITO ---
+        st.markdown("---")
+        st.subheader("🛒 Resumen de Cotización Actual")
+        
+        if len(st.session_state.carrito) > 0:
+            df_carrito = pd.DataFrame(st.session_state.carrito)
+            
+            st.dataframe(
+                df_carrito.style.format({"Neto (CLP)": "${:,.0f}", "IVA (CLP)": "${:,.0f}", "Total (CLP)": "${:,.0f}"}), 
+                use_container_width=True
+            )
+            
+            total_neto = sum(item["Neto (CLP)"] for item in st.session_state.carrito)
+            total_iva = total_neto * 0.19
+            total_final = total_neto + total_iva
+            
+            st.success(f"### Total Cotización: ${total_final:,.0f} CLP (Neto: ${total_neto:,.0f} + IVA)")
+            
+            if st.button("🗑️ Vaciar Carrito"):
+                st.session_state.carrito = []
                 st.rerun()
         else:
-            st.error("Ingresa un dato para buscar.")
+            st.write("El carrito está vacío.")
 
 # =====================================================================
-# PANTALLA B: COMPLETAR DATOS DEL CLIENTE
+# OPCIÓN 2: PANEL DE ADMINISTRADOR
 # =====================================================================
-elif not cliente_completo(st.session_state.cliente_actual):
-    st.warning("⚠️ Los datos del cliente están incompletos o es un cliente nuevo. Por favor complétalos.")
-    cli = st.session_state.cliente_actual
+elif opcion_menu == "🔑 Panel Administrador":
+    st.title("🔑 Panel de Administración y Configuración")
     
-    with st.form("form_completar_cliente"):
-        c1, c2 = st.columns(2)
-        
-        rut = c1.text_input("Rut (Sin puntos, con guión)", value=cli.get("rut", ""), disabled=st.session_state.cliente_en_bd)
-        razon_social = c2.text_input("Razon social", value=cli.get("razon_social", ""))
-        atencion = c1.text_input("Atencion", value=cli.get("atencion", ""))
-        fono = c2.text_input("Fono", value=cli.get("fono", ""))
-        direccion = c1.text_input("Direccion", value=cli.get("direccion", ""))
-        correo = c2.text_input("Correo", value=cli.get("correo", ""))
-        
-        if st.form_submit_button("Guardar y Continuar"):
-            if rut and razon_social and atencion and fono and direccion and correo:
-                datos_guardar = {
-                    "rut": rut, 
-                    "razon_social": razon_social,
-                    "atencion": atencion, 
-                    "fono": fono, 
-                    "direccion": direccion,
-                    "correo": correo
-                }
-                
-                if st.session_state.cliente_en_bd:
-                    res = supabase.table("clientes").update(datos_guardar).eq("rut", rut).execute()
+    # Autenticación de Administrador
+    if not st.session_state.admin_autenticado:
+        with st.form("form_login_admin"):
+            st.subheader("Ingreso con Credenciales de Administrador")
+            pass_input = st.text_input("Contraseña de Administrador", type="password")
+            if st.form_submit_button("Ingresar"):
+                if pass_input == ADMIN_PASSWORD:
+                    st.session_state.admin_autenticado = True
+                    st.success("Acceso concedido.")
+                    st.rerun()
                 else:
-                    res = supabase.table("clientes").insert(datos_guardar).execute()
-                    st.session_state.cliente_en_bd = True
-                
-                st.session_state.cliente_actual = res.data[0]
-                st.success("Cliente guardado correctamente.")
-                st.rerun()
-            else:
-                st.error("Todos los campos son obligatorios.")
-                
-    if st.button("Cancelar / Volver"):
-        cerrar_sesion_cliente()
-
-# =====================================================================
-# PANTALLA C: COTIZADOR Y CARRITO
-# =====================================================================
-else:
-    cli = st.session_state.cliente_actual
-    st.info(f"👤 **Cliente Activo:** {cli['razon_social']} (RUT: {cli['rut']}) - {cli['correo']}")
-    if st.button("Cambiar Cliente"):
-        cerrar_sesion_cliente()
-        
-    st.markdown("---")
-    
-    st.subheader("🧮 Agregar Producto a la Cotización")
-    
-    col_m1, col_m2, col_m3 = st.columns(3)
-    
-    material_sel = col_m1.selectbox("Material", list(ESTRUCTURA_MATERIALES.keys()))
-    formatos_disponibles = ESTRUCTURA_MATERIALES[material_sel]["formatos"]
-    formato_sel = col_m2.selectbox("Formato / Aditivo", formatos_disponibles)
-    tipo_venta = col_m3.radio("Tipo de Venta", ["Dimensionado (Trozo)", "Completo (Barra/Plancha entera)"])
-    
-    # Obtener precio base de la BD según material y formato seleccionados
-    precio_base_sugerido = PRECIOS_BASE_DB.get((material_sel, formato_sel), 12.0)
-
-    # Buscar descuento personalizado guardado en BD para este cliente, material y formato
-    res_desc = supabase.table("descuentos_cliente").select("*")\
-        .eq("cliente_rut", cli["rut"]).eq("material", material_sel).eq("tipo_formato", formato_sel).execute()
-    
-    descuento_guardado = res_desc.data[0]["descuento_porcentaje"] if res_desc.data else 0.0
-    desc_id_guardado = res_desc.data[0]["id"] if res_desc.data else None
-
-    col_p1, col_p2, col_p3 = st.columns(3)
-    precio_base_usd = col_p1.number_input("Precio Base USD / Kilo", value=float(precio_base_sugerido))
-    dolar = col_p2.number_input("Dólar Observado ($ CLP)", value=961.61)
-    descuento_aplicado = col_p3.number_input("Descuento a Aplicar (%)", value=float(descuento_guardado))
-    
-    densidad = ESTRUCTURA_MATERIALES[material_sel]["densidad"]
-    precio_kilo_clp = precio_base_usd * dolar * (1 - descuento_aplicado / 100.0)
-    
-    factor_corte = 1.20 if tipo_venta == "Dimensionado (Trozo)" else 1.00
-    
-    subtotal_neto = 0
-    descripcion_item = ""
-
-    st.write("### 📐 Dimensiones")
-    c1, c2, c3 = st.columns(3)
-    
-    es_barra = "BARRA" in formato_sel.upper()
-    
-    if es_barra:
-        diametro_mm = c1.number_input("Diámetro (mm)", min_value=5.0, value=60.0)
-        largo_cm = c2.number_input("Largo Requerido (cm)", min_value=1.0, value=100.0 if tipo_venta == "Completo (Barra/Plancha entera)" else 20.0)
-        
-        kg_metro = ((diametro_mm * 1.035) ** 2) * (math.pi / 4.0) * densidad * 1000.0 / 1000000.0
-        valor_cm_lineal = ((kg_metro * precio_kilo_clp) / 100.0) * factor_corte
-        subtotal_neto = valor_cm_lineal * largo_cm
-        descripcion_item = f"{material_sel} {formato_sel} Ø{diametro_mm}mm x {largo_cm}cm ({tipo_venta})"
-        st.caption(f"Peso est. metro: {kg_metro:.2f} kg | Valor cm lineal: ${valor_cm_lineal:.1f}")
-
-    else: 
-        espesor_mm = c1.number_input("Espesor (mm)", min_value=1.0, value=20.0)
-        ancho_cm = c2.number_input("Ancho Requerido (cm)", min_value=1.0, value=100.0 if tipo_venta == "Completo (Barra/Plancha entera)" else 30.0)
-        largo_cm = c3.number_input("Largo Requerido (cm)", min_value=1.0, value=300.0 if tipo_venta == "Completo (Barra/Plancha entera)" else 50.0)
-        
-        kg_plancha_entera = (espesor_mm * 1.035) * 1000.0 * 3000.0 * densidad / 1000000.0
-        precio_cm2 = ((kg_plancha_entera * precio_kilo_clp) / (100.0 * 300.0)) * factor_corte
-        area_cm2 = ancho_cm * largo_cm
-        subtotal_neto = precio_cm2 * area_cm2
-        descripcion_item = f"{material_sel} {formato_sel} {espesor_mm}mm [{ancho_cm}cm x {largo_cm}cm] ({tipo_venta})"
-        st.caption(f"Área cotizada: {area_cm2:,.0f} cm² | Valor cm²: ${precio_cm2:.2f}")
-
-    if st.button("➕ Agregar al Carrito de Cotización", type="primary"):
-        if descuento_aplicado != descuento_guardado:
-            datos_desc = {
-                "cliente_rut": cli["rut"], 
-                "material": material_sel, 
-                "tipo_formato": formato_sel, 
-                "descuento_porcentaje": descuento_aplicado
-            }
-            if desc_id_guardado:
-                supabase.table("descuentos_cliente").update(datos_desc).eq("id", desc_id_guardado).execute()
-            else:
-                supabase.table("descuentos_cliente").insert(datos_desc).execute()
-            st.toast(f"✅ Descuento de {descuento_aplicado}% guardado para {material_sel} {formato_sel}")
-
-        st.session_state.carrito.append({
-            "Descripción": descripcion_item,
-            "Cant.": 1,
-            "Descuento": f"{descuento_aplicado}%",
-            "Neto (CLP)": subtotal_neto,
-            "IVA (CLP)": subtotal_neto * 0.19,
-            "Total (CLP)": subtotal_neto * 1.19
-        })
-        st.rerun()
-
-    # --- 5. CARRITO Y TOTALES ---
-    st.markdown("---")
-    st.subheader("🛒 Resumen de Cotización Actual")
-    
-    if len(st.session_state.carrito) > 0:
-        df_carrito = pd.DataFrame(st.session_state.carrito)
-        
-        st.dataframe(
-            df_carrito.style.format({"Neto (CLP)": "${:,.0f}", "IVA (CLP)": "${:,.0f}", "Total (CLP)": "${:,.0f}"}), 
-            use_container_width=True
-        )
-        
-        total_neto = sum(item["Neto (CLP)"] for item in st.session_state.carrito)
-        total_iva = total_neto * 0.19
-        total_final = total_neto + total_iva
-        
-        st.success(f"### Total Cotización: ${total_final:,.0f} CLP (Neto: ${total_neto:,.0f} + IVA)")
-        
-        if st.button("🗑️ Vaciar Carrito"):
-            st.session_state.carrito = []
-            st.rerun()
+                    st.error("Contraseña incorrecta.")
     else:
-        st.write("El carrito está vacío.")
+        st.sidebar.button("🔒 Cerrar Sesión Admin", on_click=lambda: st.session_state.update({"admin_autenticado": False}))
+        
+        # --- SECCIÓN A: CONFIGURACIÓN DEL DÓLAR OBSERVADO ---
+        st.subheader("💵 Configuración Global del Dólar Observado")
+        col_d1, col_d2 = st.columns([2, 1])
+        nuevo_dolar = col_d1.number_input("Dólar Observado Actual ($ CLP)", value=float(st.session_state.dolar_observado), step=0.5)
+        if col_d2.button("💾 Actualizar Dólar", type="primary"):
+            st.session_state.dolar_observado = nuevo_dolar
+            st.success(f"Dólar actualizado a ${nuevo_dolar} CLP")
+            
+        st.markdown("---")
+        
+        # --- SECCIÓN B: MODIFICAR PRECIOS BASE DE MATERIALES ---
+        st.subheader("🛠️ Editar Precios Base por Material (USD / Kg)")
+        st.caption("Modifica los precios directamente en la tabla y presiona 'Guardar Cambios' para actualizar en Supabase.")
+        
+        if not DF_MATERIALES_RAW.empty:
+            # Preparamos el dataframe para edición
+            df_edit = DF_MATERIALES_RAW[["id", "material", "formato", "precio_base_usd"]].copy()
+            
+            edited_df = st.data_editor(
+                df_edit,
+                disabled=["id", "material", "formato"],  # Solo se permite editar el precio
+                column_config={
+                    "id": "ID",
+                    "material": "Material",
+                    "formato": "Formato / Variante / Aditivo",
+                    "precio_base_usd": st.column_config.NumberColumn("Precio Base (USD)", format="$%.2f", min_value=0.0)
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            if st.button("💾 Guardar Cambios de Precios en Base de Datos", type="primary"):
+                try:
+                    cambios = 0
+                    for _, row in edited_df.iterrows():
+                        row_id = row["id"]
+                        nuevo_precio = float(row["precio_base_usd"])
+                        precio_orig = float(DF_MATERIALES_RAW.loc[DF_MATERIALES_RAW["id"] == row_id, "precio_base_usd"].values[0])
+                        
+                        if nuevo_precio != precio_orig:
+                            supabase.table("materiales_precios").update({"precio_base_usd": nuevo_precio}).eq("id", row_id).execute()
+                            cambios += 1
+                            
+                    st.cache_data.clear()  # Limpia la caché para recargar datos
+                    st.success(f"✅ Se actualizaron {cambios} precio(s) correctamente.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al guardar cambios: {e}")
+        else:
+            st.info("No hay datos de materiales registrados en la base de datos.")
