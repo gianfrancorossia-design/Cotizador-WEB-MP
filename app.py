@@ -24,25 +24,51 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- 2. ESTRUCTURA DE MATERIALES (Basado en Excel V3_6) ---
-ESTRUCTURA_MATERIALES = {
-    "HMW": {
-        "densidad": 0.96,
-        "formatos": ["PLANCHA BCA/NEGRA", "PLANCHA COLOR", "PLANCHA Cu.", "BARRA BLANCA", "BARRA NEGRA"]
-    },
-    "PA-6": {
-        "densidad": 1.14,
-        "formatos": ["PLANCHA BCA.", "PLANCHA NEGRA", "BARRA BLANCA", "BARRA NEGRA"]
-    },
-    "POLIPROPILENO": {
-        "densidad": 0.92,
-        "formatos": ["PLANCHA", "BARRA"]
-    },
-    "POM": {
-        "densidad": 1.42,
-        "formatos": ["PLANCHA", "BARRA"]
-    }
+# --- 2. CARGAR MATERIALES Y DENSIDADES ---
+# Definimos las densidades estándar por material (puedes ajustarlas si lo necesitas)
+DENSIDADES_MATERIALES = {
+    "HMW": 0.96,
+    "PA-6": 1.14,
+    "POLIPROPILENO": 0.92,
+    "POM": 1.42,
+    "PTFE": 2.16,
+    "OTRO": 1.00
 }
+
+@st.cache_data
+def cargar_estructura_materiales():
+    try:
+        res = supabase.table("materiales_precios").select("*").execute()
+        data = res.data
+        
+        estructura = {}
+        precios_base_dict = {}
+        
+        for item in data:
+            mat = item["material"]
+            fmt = item["formato"]
+            precio = item["precio_base_usd"]
+            
+            if mat not in estructura:
+                estructura[mat] = {
+                    "densidad": DENSIDADES_MATERIALES.get(mat, 1.0),
+                    "formatos": []
+                }
+            if fmt not in estructura[mat]["formatos"]:
+                estructura[mat]["formatos"].append(fmt)
+                
+            precios_base_dict[(mat, fmt)] = float(precio)
+            
+        return estructura, precios_base_dict
+    except Exception as e:
+        st.error(f"Error al cargar materiales desde Supabase: {e}")
+        return {}, {}
+
+ESTRUCTURA_MATERIALES, PRECIOS_BASE_DB = cargar_estructura_materiales()
+
+if not ESTRUCTURA_MATERIALES:
+    st.warning("No se encontraron materiales en la base de datos. Asegúrate de haber ejecutado el script SQL en Supabase.")
+    st.stop()
 
 # --- 3. GESTIÓN DEL ESTADO (SESSION STATE) ---
 if "cliente_actual" not in st.session_state:
@@ -54,7 +80,6 @@ if "carrito" not in st.session_state:
 
 # Funciones Auxiliares
 def cliente_completo(cli):
-    # Validamos las 6 columnas solicitadas usando "correo"
     campos = ["rut", "razon_social", "atencion", "fono", "direccion", "correo"]
     return all(cli.get(c) and str(cli.get(c)).strip() != "" for c in campos)
 
@@ -159,9 +184,13 @@ else:
     
     material_sel = col_m1.selectbox("Material", list(ESTRUCTURA_MATERIALES.keys()))
     formatos_disponibles = ESTRUCTURA_MATERIALES[material_sel]["formatos"]
-    formato_sel = col_m2.selectbox("Formato y Color", formatos_disponibles)
+    formato_sel = col_m2.selectbox("Formato / Aditivo", formatos_disponibles)
     tipo_venta = col_m3.radio("Tipo de Venta", ["Dimensionado (Trozo)", "Completo (Barra/Plancha entera)"])
     
+    # Obtener precio base de la BD según material y formato seleccionados
+    precio_base_sugerido = PRECIOS_BASE_DB.get((material_sel, formato_sel), 12.0)
+
+    # Buscar descuento personalizado guardado en BD para este cliente, material y formato
     res_desc = supabase.table("descuentos_cliente").select("*")\
         .eq("cliente_rut", cli["rut"]).eq("material", material_sel).eq("tipo_formato", formato_sel).execute()
     
@@ -169,7 +198,7 @@ else:
     desc_id_guardado = res_desc.data[0]["id"] if res_desc.data else None
 
     col_p1, col_p2, col_p3 = st.columns(3)
-    precio_base_usd = col_p1.number_input("Precio Base USD / Kilo", value=12.0)
+    precio_base_usd = col_p1.number_input("Precio Base USD / Kilo", value=float(precio_base_sugerido))
     dolar = col_p2.number_input("Dólar Observado ($ CLP)", value=961.61)
     descuento_aplicado = col_p3.number_input("Descuento a Aplicar (%)", value=float(descuento_guardado))
     
